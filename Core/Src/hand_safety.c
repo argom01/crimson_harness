@@ -152,22 +152,3 @@ bool hand_pose_link_ok(const hand_pose_state_t *state, uint32_t now_ms)
     }
     return (now_ms - state->last_rx_ms) <= HAND_LINK_TIMEOUT_MS;
 }
-
-hand_safety_reason_t hand_pose_last_reason(const hand_pose_state_t *state)
-{
-    if (state == NULL) {
-        return HAND_SAFE_LINK_TIMEOUT;
-    }
-    if (!hand_pose_link_ok(state, HAL_GetTick())) {
-        return HAND_SAFE_LINK_TIMEOUT;
-    }
-    return state->last_reason;
-}
-
-uint16_t hand_pose_packet_crc(const uint8_t *packet, uint8_t len)
-{
-    if (packet == NULL || len < HAND_PACKET_SIZE) {
-        return 0U;
-    }
-    return crc16_ccitt(packet, (uint16_t)(HAND_PACKET_SIZE - 2U));
-}

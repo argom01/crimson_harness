@@ -29,7 +29,5 @@ void hand_pose_init(hand_pose_state_t *state);
 bool hand_pose_feed(hand_pose_state_t *state, const uint8_t *packet, uint8_t len,
                     int16_t rssi_dbm, uint32_t now_ms);
 bool hand_pose_link_ok(const hand_pose_state_t *state, uint32_t now_ms);
-hand_safety_reason_t hand_pose_last_reason(const hand_pose_state_t *state);
-uint16_t hand_pose_packet_crc(const uint8_t *packet, uint8_t len);
 
 #endif /* HAND_SAFETY_H */

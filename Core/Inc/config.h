@@ -44,9 +44,7 @@
 /* Neutral hover thrust (0..1) while hand-controlling attitude */
 #define HAND_NEUTRAL_THRUST       0.5f
 
-/* MAVLink buffers */
-#define MAV_RX_BUFFER_SIZE        512U
-#define MAV_MAX_PAYLOAD           255U
+/* LoRa payload limit */
 #define LORA_MAX_PAYLOAD          240U
 
 #endif /* CONFIG_H */

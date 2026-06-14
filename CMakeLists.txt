@@ -47,7 +47,6 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/spi_bus.c
     Core/Src/sx1281.c
     Core/Src/sx1262.c
-    Core/Src/mavlink_proto.c
     Core/Src/hand_safety.c
     Core/Src/radio_harness.c
 )
@@ -55,6 +54,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
 # Add include paths
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Inc
+    ThirdParty/mavlink/ardupilotmega
 )
 
 # Add project symbols (macros)
