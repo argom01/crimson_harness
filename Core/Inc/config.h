@@ -30,6 +30,7 @@
 /* Link health */
 #define HAND_LINK_TIMEOUT_MS      500U
 #define GS_ACTIVITY_TIMEOUT_MS    2000U
+#define MODE_CMD_RETRY_MS         500U
 #define RSSI_WEAK_THRESHOLD_DBM   (-95)
 #define HAND_CONTROL_HZ           50U
 #define HARNESS_HEARTBEAT_HZ      1U

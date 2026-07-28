@@ -26,8 +26,16 @@ static uint32_t last_heartbeat_ms;
 static uint32_t last_mode_tx_ms;
 static uint32_t last_rf24_reinit_ms;
 static uint32_t last_rf900_reinit_ms;
-static bool failsafe_mode_sent;
-static bool guided_mode_sent;
+
+/* Flight mode commanding is closed-loop: SET_MODE is re-sent until the
+   FC's heartbeat reports the target custom_mode. Once confirmed we stop
+   commanding, so a mode change made by the FC itself (its own failsafe)
+   or by a pilot is not fought. */
+static uint32_t mode_target;
+static bool mode_confirmed;
+static uint32_t fc_custom_mode;
+static bool fc_mode_known;
+static uint32_t last_fc_heartbeat_ms;
 
 /* 900 MHz downlink TX queue: telemetry is sent without ever blocking the
    control loop. A full payload at SF7/BW125 is ~370 ms of airtime, so the
@@ -43,14 +51,24 @@ static uint8_t gs_tx_count;
 static bool gs_tx_active;
 static uint32_t gs_tx_start_ms;
 
+static void begin_mode_command(uint32_t target_custom_mode)
+{
+    mode_target = target_custom_mode;
+    mode_confirmed = false;
+    /* Backdate so the first SET_MODE goes out on the next service pass */
+    last_mode_tx_ms = HAL_GetTick() - MODE_CMD_RETRY_MS;
+}
+
 static void enter_state(harness_state_t new_state)
 {
     harness_state = new_state;
     if (new_state == HARNESS_STATE_HAND_CONTROL) {
-        guided_mode_sent = false;
+        begin_mode_command(AP_MODE_GUIDED_NOGPS);
     } else if (new_state == HARNESS_STATE_FAILSAFE) {
-        failsafe_mode_sent = false;
-        guided_mode_sent = false;
+        begin_mode_command(AP_MODE_ALT_HOLD);
+    } else {
+        /* GS passthrough: the ground station owns the mode */
+        mode_confirmed = true;
     }
 }
 
@@ -222,6 +240,15 @@ static void poll_uart(void)
             continue;
         }
 
+        if (msg.msgid == MAVLINK_MSG_ID_HEARTBEAT &&
+            msg.sysid == FC_TARGET_SYS && msg.compid == FC_TARGET_COMP) {
+            mavlink_heartbeat_t hb;
+            mavlink_msg_heartbeat_decode(&msg, &hb);
+            fc_custom_mode = hb.custom_mode;
+            fc_mode_known = true;
+            last_fc_heartbeat_ms = HAL_GetTick();
+        }
+
         if (harness_state == HARNESS_STATE_GS_PASSTHROUGH ||
             harness_state == HARNESS_STATE_HAND_CONTROL ||
             harness_state == HARNESS_STATE_FAILSAFE) {
@@ -260,26 +287,32 @@ static void update_arbitration(uint32_t now_ms)
     }
 }
 
-static void service_failsafe(uint32_t now_ms)
+static void service_mode_command(uint32_t now_ms)
 {
-    if (!failsafe_mode_sent || (now_ms - last_mode_tx_ms) > 3000U) {
-        if (mavlink_send_set_mode(AP_MODE_ALT_HOLD)) {
-            failsafe_mode_sent = true;
+    if (mode_confirmed) {
+        return;
+    }
+    if (fc_mode_known && fc_custom_mode == mode_target) {
+        mode_confirmed = true;
+        return;
+    }
+    if ((now_ms - last_mode_tx_ms) >= MODE_CMD_RETRY_MS) {
+        if (mavlink_send_set_mode(mode_target)) {
             last_mode_tx_ms = now_ms;
         }
     }
+}
+
+static void service_failsafe(uint32_t now_ms)
+{
+    service_mode_command(now_ms);
 }
 
 static void service_hand_control(uint32_t now_ms)
 {
     const uint32_t hand_period_ms = 1000U / HAND_CONTROL_HZ;
 
-    if (!guided_mode_sent || (now_ms - last_mode_tx_ms) > 3000U) {
-        if (mavlink_send_set_mode(AP_MODE_GUIDED_NOGPS)) {
-            guided_mode_sent = true;
-            last_mode_tx_ms = now_ms;
-        }
-    }
+    service_mode_command(now_ms);
 
     if ((now_ms - last_hand_tx_ms) >= hand_period_ms && hand_state.valid) {
         if (mavlink_send_set_attitude_target(hand_state.q, HAND_NEUTRAL_THRUST)) {
@@ -312,8 +345,9 @@ void radio_harness_init(void)
     last_mode_tx_ms = 0U;
     last_rf24_reinit_ms = 0U;
     last_rf900_reinit_ms = 0U;
-    failsafe_mode_sent = false;
-    guided_mode_sent = false;
+    fc_custom_mode = 0U;
+    fc_mode_known = false;
+    last_fc_heartbeat_ms = 0U;
     gs_tx_head = 0U;
     gs_tx_count = 0U;
     gs_tx_active = false;
