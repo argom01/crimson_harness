@@ -113,6 +113,19 @@ void hand_pose_init(hand_pose_state_t *state)
     state->rssi_dbm = -127;
 }
 
+static bool reject_packet(hand_pose_state_t *state, hand_safety_reason_t reason)
+{
+    state->last_reason = reason;
+    state->good_streak = 0U;
+    if (state->reject_streak < UINT8_MAX) {
+        state->reject_streak++;
+    }
+    if (state->reject_streak >= HAND_DISENGAGE_BAD_COUNT) {
+        state->engaged = false;
+    }
+    return false;
+}
+
 bool hand_pose_feed(hand_pose_state_t *state, const uint8_t *packet, uint8_t len,
                     int16_t rssi_dbm, uint32_t now_ms)
 {
@@ -126,26 +139,28 @@ bool hand_pose_feed(hand_pose_state_t *state, const uint8_t *packet, uint8_t len
     const hand_pose_packet_t *pkt = &pkt_copy;
 
     if (pkt->magic != HAND_PACKET_MAGIC) {
-        state->last_reason = HAND_SAFE_BAD_MAGIC;
-        return false;
+        return reject_packet(state, HAND_SAFE_BAD_MAGIC);
     }
 
     const uint16_t expected_crc = crc16_ccitt(packet, (uint16_t)(HAND_PACKET_SIZE - 2U));
     if (expected_crc != pkt->crc16) {
-        state->last_reason = HAND_SAFE_BAD_CRC;
-        return false;
-    }
-
-    if (rssi_dbm < RSSI_WEAK_THRESHOLD_DBM) {
-        state->last_reason = HAND_SAFE_RSSI_WEAK;
-        state->rssi_dbm = rssi_dbm;
-        return false;
+        return reject_packet(state, HAND_SAFE_BAD_CRC);
     }
 
     const hand_safety_reason_t quat_reason = check_quaternion(state, pkt->q, now_ms);
     if (quat_reason != HAND_SAFE_OK) {
-        state->last_reason = quat_reason;
-        return false;
+        return reject_packet(state, quat_reason);
+    }
+
+    /* Weak RSSI does not reject a CRC-valid packet (discarding good control
+       data at the edge of range only makes link loss more likely); it is
+       kept in rssi_dbm for downstream reporting. */
+
+    /* A gap longer than the link timeout voids any earlier streak: the link
+       must prove itself again before (re-)engaging. */
+    if (state->valid && (now_ms - state->last_rx_ms) > HAND_LINK_TIMEOUT_MS) {
+        state->good_streak = 0U;
+        state->engaged = false;
     }
 
     state->q[0] = pkt->q[0];
@@ -157,12 +172,20 @@ bool hand_pose_feed(hand_pose_state_t *state, const uint8_t *packet, uint8_t len
     state->last_rx_ms = now_ms;
     state->valid = true;
     state->last_reason = HAND_SAFE_OK;
+
+    state->reject_streak = 0U;
+    if (state->good_streak < UINT8_MAX) {
+        state->good_streak++;
+    }
+    if (state->good_streak >= HAND_ENGAGE_GOOD_COUNT) {
+        state->engaged = true;
+    }
     return true;
 }
 
 bool hand_pose_link_ok(const hand_pose_state_t *state, uint32_t now_ms)
 {
-    if (state == NULL || !state->valid) {
+    if (state == NULL || !state->valid || !state->engaged) {
         return false;
     }
     return (now_ms - state->last_rx_ms) <= HAND_LINK_TIMEOUT_MS;

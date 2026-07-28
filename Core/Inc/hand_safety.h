@@ -23,6 +23,12 @@ typedef struct {
     uint32_t last_rx_ms;
     bool valid;
     hand_safety_reason_t last_reason;
+    /* Hysteresis: the link engages after HAND_ENGAGE_GOOD_COUNT consecutive
+       valid packets and disengages after HAND_DISENGAGE_BAD_COUNT
+       consecutive rejects or a gap longer than HAND_LINK_TIMEOUT_MS. */
+    uint8_t good_streak;
+    uint8_t reject_streak;
+    bool engaged;
 } hand_pose_state_t;
 
 void hand_pose_init(hand_pose_state_t *state);

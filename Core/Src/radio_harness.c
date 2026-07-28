@@ -264,8 +264,9 @@ static bool gs_link_active(uint32_t now_ms)
 
 static void update_arbitration(uint32_t now_ms)
 {
-    const bool hand_ok = hand_pose_link_ok(&hand_state, now_ms) &&
-                         hand_state.last_reason == HAND_SAFE_OK;
+    /* Engagement hysteresis lives in hand_safety; a single rejected packet
+       no longer flaps the harness out of hand control. */
+    const bool hand_ok = hand_pose_link_ok(&hand_state, now_ms);
     const bool gs_active = gs_link_active(now_ms);
 
     if (gs_active) {

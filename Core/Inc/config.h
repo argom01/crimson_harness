@@ -31,6 +31,11 @@
 #define HAND_LINK_TIMEOUT_MS      500U
 #define GS_ACTIVITY_TIMEOUT_MS    2000U
 #define MODE_CMD_RETRY_MS         500U
+
+/* Hand link hysteresis: consecutive valid packets required to engage hand
+   control, consecutive rejected packets required to disengage it */
+#define HAND_ENGAGE_GOOD_COUNT    5U
+#define HAND_DISENGAGE_BAD_COUNT  10U
 #define RSSI_WEAK_THRESHOLD_DBM   (-95)
 #define HAND_CONTROL_HZ           50U
 #define HARNESS_HEARTBEAT_HZ      1U
