@@ -2,14 +2,20 @@
 #include "app_error.h"
 #include "main.h"
 
-/* USART1 DMA mapping on STM32F103: RX = DMA1 channel 5, TX = DMA1 channel 4.
-   Both directions are driven at register level and polled from the main
-   loop: no interrupts, no HAL UART state machine, nothing that can wedge.
+/* DMA-backed FC UART link on the CubeMX-generated HAL handles
+   (hdma_usart1_rx circular, hdma_usart1_tx normal, USART1 + DMA IRQs
+   enabled). All HAL calls happen in main-loop context; the HAL ISRs only
+   complete transfers, so there is no shared bookkeeping to race on.
 
    512 bytes of RX buffer is ~44 ms of headroom at 115200 baud, far more
    than one loop pass. */
 #define UART_RX_BUF_LEN 512U
 #define UART_TX_BUF_LEN 512U
+
+/* A full TX buffer drains in ~45 ms at 115200 baud. If the handle is still
+   BUSY_TX long after that, a completion interrupt was lost or the
+   peripheral wedged: abort so the stream can recover. */
+#define UART_TX_STUCK_MS 100U
 
 static uint8_t rx_buf[UART_RX_BUF_LEN];
 static uint16_t rx_tail;
@@ -18,33 +24,28 @@ static uint8_t tx_buf[UART_TX_BUF_LEN];
 static uint16_t tx_head;     /* start of pending data (in-flight first) */
 static uint16_t tx_count;    /* pending bytes, including in-flight chunk */
 static uint16_t tx_inflight; /* bytes handed to the current DMA transfer */
+static uint32_t tx_start_ms;
+
+static void rx_arm(void)
+{
+    rx_tail = 0U;
+    if (HAL_UART_Receive_DMA(&huart1, rx_buf, UART_RX_BUF_LEN) != HAL_OK) {
+        app_error_report(APP_ERR_UART_RX);
+    }
+}
 
 void uart_link_init(void)
 {
-    __HAL_RCC_DMA1_CLK_ENABLE();
-
-    /* RX: circular buffer, DMA runs forever, consumer chases CNDTR */
-    DMA1_Channel5->CCR = 0U;
-    DMA1_Channel5->CPAR = (uint32_t)&USART1->DR;
-    DMA1_Channel5->CMAR = (uint32_t)rx_buf;
-    DMA1_Channel5->CNDTR = UART_RX_BUF_LEN;
-    DMA1_Channel5->CCR = DMA_CCR_MINC | DMA_CCR_CIRC | DMA_CCR_EN;
-
-    /* TX: one-shot transfers restarted chunk by chunk from the ring */
-    DMA1_Channel4->CCR = 0U;
-    DMA1_Channel4->CPAR = (uint32_t)&USART1->DR;
-
-    SET_BIT(USART1->CR3, USART_CR3_DMAR | USART_CR3_DMAT);
-
-    rx_tail = 0U;
     tx_head = 0U;
     tx_count = 0U;
     tx_inflight = 0U;
+    rx_arm();
 }
 
 bool uart_link_read_byte(uint8_t *byte)
 {
-    const uint16_t head = (uint16_t)(UART_RX_BUF_LEN - DMA1_Channel5->CNDTR);
+    const uint16_t head =
+        (uint16_t)(UART_RX_BUF_LEN - __HAL_DMA_GET_COUNTER(huart1.hdmarx));
     if (head == rx_tail) {
         return false;
     }
@@ -53,15 +54,22 @@ bool uart_link_read_byte(uint8_t *byte)
     return true;
 }
 
-/* Reclaim finished DMA space and start the next contiguous chunk. */
+/* Reclaim the completed chunk and start the next contiguous one. */
 static void tx_kick(void)
 {
-    if ((DMA1_Channel4->CCR & DMA_CCR_EN) != 0U) {
-        if (DMA1_Channel4->CNDTR != 0U) {
-            return; /* previous chunk still in flight */
+    if (huart1.gState != HAL_UART_STATE_READY) {
+        if (tx_inflight != 0U && (HAL_GetTick() - tx_start_ms) > UART_TX_STUCK_MS) {
+            /* Completion never arrived; abort, drop the chunk, resync */
+            (void)HAL_UART_AbortTransmit(&huart1);
+            app_error_report(APP_ERR_UART_TX);
+            tx_head = (uint16_t)((tx_head + tx_inflight) % UART_TX_BUF_LEN);
+            tx_count = (uint16_t)(tx_count - tx_inflight);
+            tx_inflight = 0U;
         }
-        DMA1_Channel4->CCR &= ~DMA_CCR_EN;
-        DMA1->IFCR = DMA_IFCR_CGIF4;
+        return;
+    }
+
+    if (tx_inflight != 0U) {
         tx_head = (uint16_t)((tx_head + tx_inflight) % UART_TX_BUF_LEN);
         tx_count = (uint16_t)(tx_count - tx_inflight);
         tx_inflight = 0U;
@@ -75,10 +83,10 @@ static void tx_kick(void)
     if (chunk > tx_count) {
         chunk = tx_count;
     }
-    tx_inflight = chunk;
-    DMA1_Channel4->CMAR = (uint32_t)&tx_buf[tx_head];
-    DMA1_Channel4->CNDTR = chunk;
-    DMA1_Channel4->CCR = DMA_CCR_MINC | DMA_CCR_DIR | DMA_CCR_EN;
+    if (HAL_UART_Transmit_DMA(&huart1, &tx_buf[tx_head], chunk) == HAL_OK) {
+        tx_inflight = chunk;
+        tx_start_ms = HAL_GetTick();
+    }
 }
 
 bool uart_link_write(const uint8_t *data, uint16_t len)
@@ -107,12 +115,12 @@ bool uart_link_write(const uint8_t *data, uint16_t len)
 
 void uart_link_poll(void)
 {
-    /* Noise/overrun flags (FE/NE/PE/ORE) are cleared by an SR read followed
-       by a DR read; the DMA's own DR access completes the sequence. Left
-       uncleared they would not stop DMA, but clear them for hygiene. */
-    const uint32_t sr = USART1->SR;
-    if ((sr & (USART_SR_ORE | USART_SR_FE | USART_SR_NE | USART_SR_PE)) != 0U) {
-        (void)sr;
+    /* On an overrun the HAL aborts circular RX (RxState back to READY) and
+       stops receiving. Re-arm so a noise burst can never silence the FC
+       link permanently. */
+    if (huart1.RxState == HAL_UART_STATE_READY) {
+        app_error_report(APP_ERR_UART_RX);
+        rx_arm();
     }
 
     tx_kick();

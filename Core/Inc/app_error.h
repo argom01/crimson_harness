@@ -13,6 +13,7 @@ typedef enum {
     APP_ERR_RF900_BUSY, /* SX1262 BUSY stuck high */
     APP_ERR_RF900_INIT, /* SX1262 (re)init failed */
     APP_ERR_UART_TX,    /* UART transmit failed or message dropped */
+    APP_ERR_UART_RX,    /* UART reception aborted / re-armed */
     APP_ERR_COUNT
 } app_error_t;
 
