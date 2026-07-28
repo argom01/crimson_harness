@@ -5,6 +5,7 @@
 #include "spi_bus.h"
 #include "sx1262.h"
 #include "sx1281.h"
+#include "uart_link.h"
 #include "main.h"
 #include "mavlink.h"
 #include <string.h>
@@ -57,7 +58,7 @@ static bool mavlink_uart_send(const mavlink_message_t *msg)
 {
     uint8_t buf[MAVLINK_MAX_PACKET_LEN];
     const uint16_t len = mavlink_msg_to_send_buffer(buf, msg);
-    return HAL_UART_Transmit(&huart1, buf, len, 50U) == HAL_OK;
+    return uart_link_write(buf, len);
 }
 
 static bool mavlink_send_set_mode(uint32_t custom_mode)
@@ -216,7 +217,7 @@ static void poll_uart(void)
     uint8_t byte;
     mavlink_message_t msg;
 
-    while (HAL_UART_Receive(&huart1, &byte, 1U, 0U) == HAL_OK) {
+    while (uart_link_read_byte(&byte)) {
         if (!mavlink_parse_char(MAVLINK_COMM_0, byte, &msg, &uart_mavlink_status)) {
             continue;
         }
@@ -300,6 +301,7 @@ static void service_heartbeat(uint32_t now_ms)
 void radio_harness_init(void)
 {
     spi_bus_init();
+    uart_link_init();
     hand_pose_init(&hand_state);
     memset(&uart_mavlink_status, 0, sizeof(uart_mavlink_status));
     memset(&gs_mavlink_status, 0, sizeof(gs_mavlink_status));
@@ -337,6 +339,7 @@ void radio_harness_poll(void)
     poll_rf24();
     poll_rf900();
     poll_uart();
+    uart_link_poll();
     service_gs_tx(now_ms);
     update_arbitration(now_ms);
     service_heartbeat(now_ms);
