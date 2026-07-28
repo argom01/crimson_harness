@@ -11,6 +11,9 @@ typedef struct __attribute__((packed)) {
     uint16_t crc16;
 } hand_pose_packet_t;
 
+_Static_assert(sizeof(hand_pose_packet_t) == HAND_PACKET_SIZE,
+               "hand_pose_packet_t must match the wire format size");
+
 static uint16_t crc16_ccitt(const uint8_t *data, uint16_t len)
 {
     uint16_t crc = 0xFFFFU;
@@ -57,6 +60,14 @@ static void quat_to_euler_deg(const float q[4], float *roll_deg, float *pitch_de
 
 static hand_safety_reason_t check_quaternion(hand_pose_state_t *state, const float q[4], uint32_t now_ms)
 {
+    /* NaN compares false against everything, so a non-finite quaternion would
+       pass the norm/tilt/rate checks below. Reject it explicitly. */
+    for (uint8_t i = 0U; i < 4U; i++) {
+        if (!isfinite(q[i])) {
+            return HAND_SAFE_BAD_QUAT;
+        }
+    }
+
     const float norm_sq = q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3];
     const float norm = sqrtf(norm_sq);
     if (fabsf(norm - 1.0f) > QUAT_NORM_TOLERANCE) {
@@ -109,7 +120,11 @@ bool hand_pose_feed(hand_pose_state_t *state, const uint8_t *packet, uint8_t len
         return false;
     }
 
-    const hand_pose_packet_t *pkt = (const hand_pose_packet_t *)packet;
+    /* Copy instead of casting: the RX buffer has no alignment guarantee */
+    hand_pose_packet_t pkt_copy;
+    memcpy(&pkt_copy, packet, sizeof(pkt_copy));
+    const hand_pose_packet_t *pkt = &pkt_copy;
+
     if (pkt->magic != HAND_PACKET_MAGIC) {
         state->last_reason = HAND_SAFE_BAD_MAGIC;
         return false;
