@@ -28,6 +28,20 @@ static uint32_t last_rf900_reinit_ms;
 static bool failsafe_mode_sent;
 static bool guided_mode_sent;
 
+/* 900 MHz downlink TX queue: telemetry is sent without ever blocking the
+   control loop. A full payload at SF7/BW125 is ~370 ms of airtime, so the
+   queue overflows under load; oldest messages are dropped (telemetry is
+   lossy by design, the FC re-sends periodically). */
+#define GS_TX_QUEUE_LEN   3U
+#define GS_TX_TIMEOUT_MS  500U
+
+static uint8_t gs_tx_buf[GS_TX_QUEUE_LEN][LORA_MAX_PAYLOAD];
+static uint8_t gs_tx_len[GS_TX_QUEUE_LEN];
+static uint8_t gs_tx_head; /* next slot to transmit */
+static uint8_t gs_tx_count;
+static bool gs_tx_active;
+static uint32_t gs_tx_start_ms;
+
 static void enter_state(harness_state_t new_state)
 {
     harness_state = new_state;
@@ -83,21 +97,51 @@ static void forward_mavlink_to_gs(const mavlink_message_t *msg)
 {
     uint8_t buf[MAVLINK_MAX_PACKET_LEN];
     const uint16_t len = mavlink_msg_to_send_buffer(buf, msg);
-    if (len > LORA_MAX_PAYLOAD) {
+    if (len == 0U || len > LORA_MAX_PAYLOAD) {
         return;
     }
 
-    sx1262_set_tx(buf, (uint8_t)len);
-
-    const uint32_t deadline = HAL_GetTick() + 500U;
-    while (!sx1262_irq_tx_done()) {
-        if (HAL_GetTick() >= deadline) {
-            break;
-        }
+    if (gs_tx_count == GS_TX_QUEUE_LEN) {
+        /* Queue full: drop the oldest message to keep telemetry fresh */
+        gs_tx_head = (uint8_t)((gs_tx_head + 1U) % GS_TX_QUEUE_LEN);
+        gs_tx_count--;
     }
 
-    sx1262_clear_irq();
-    sx1262_set_rx();
+    const uint8_t slot = (uint8_t)((gs_tx_head + gs_tx_count) % GS_TX_QUEUE_LEN);
+    memcpy(gs_tx_buf[slot], buf, len);
+    gs_tx_len[slot] = (uint8_t)len;
+    gs_tx_count++;
+}
+
+static void service_gs_tx(uint32_t now_ms)
+{
+    if (!sx1262_healthy()) {
+        /* Re-init path puts the radio back into RX; abandon any TX */
+        gs_tx_active = false;
+        return;
+    }
+
+    if (gs_tx_active) {
+        if (sx1262_irq_tx_done() || (now_ms - gs_tx_start_ms) > GS_TX_TIMEOUT_MS) {
+            (void)sx1262_clear_irq();
+            (void)sx1262_set_rx();
+            gs_tx_active = false;
+        }
+        return;
+    }
+
+    if (gs_tx_count == 0U) {
+        return;
+    }
+
+    const uint8_t slot = gs_tx_head;
+    gs_tx_head = (uint8_t)((gs_tx_head + 1U) % GS_TX_QUEUE_LEN);
+    gs_tx_count--;
+
+    if (sx1262_set_tx(gs_tx_buf[slot], gs_tx_len[slot])) {
+        gs_tx_active = true;
+        gs_tx_start_ms = now_ms;
+    }
 }
 
 /* A radio that keeps failing SPI transactions or holds BUSY high is dead;
@@ -139,7 +183,7 @@ static void poll_rf24(void)
 
 static void poll_rf900(void)
 {
-    if (!sx1262_healthy() || !sx1262_irq_rx_done()) {
+    if (gs_tx_active || !sx1262_healthy() || !sx1262_irq_rx_done()) {
         return;
     }
 
@@ -268,6 +312,10 @@ void radio_harness_init(void)
     last_rf900_reinit_ms = 0U;
     failsafe_mode_sent = false;
     guided_mode_sent = false;
+    gs_tx_head = 0U;
+    gs_tx_count = 0U;
+    gs_tx_active = false;
+    gs_tx_start_ms = 0U;
 
     /* A dead radio must not brick the harness: the other link stays up and
        service_radio_health() keeps retrying the failed one. */
@@ -289,6 +337,7 @@ void radio_harness_poll(void)
     poll_rf24();
     poll_rf900();
     poll_uart();
+    service_gs_tx(now_ms);
     update_arbitration(now_ms);
     service_heartbeat(now_ms);
 
