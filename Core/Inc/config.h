@@ -15,7 +15,7 @@
 
 /* 2.4 GHz LoRa (SX1281) */
 #define RF24_FREQUENCY_HZ         2403000000UL
-#define RF24_TX_POWER             0x1EU   /* 0 dBm */
+#define RF24_TX_POWER             0x1EU   /* +12 dBm (value = dBm + 18) */
 #define RF24_SYNC_WORD            0x12U
 
 /* 900 MHz LoRa (SX1262) */
