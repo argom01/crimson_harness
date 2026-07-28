@@ -161,6 +161,10 @@ static void service_gs_tx(uint32_t now_ms)
     if (sx1262_set_tx(gs_tx_buf[slot], gs_tx_len[slot])) {
         gs_tx_active = true;
         gs_tx_start_ms = now_ms;
+    } else {
+        /* A failed TX start may have left the RF switch in TX; go back to
+           RX so the downlink cannot end up deaf. */
+        (void)sx1262_set_rx();
     }
 }
 
