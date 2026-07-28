@@ -21,6 +21,7 @@ static hand_pose_state_t hand_state;
 static mavlink_status_t uart_mavlink_status;
 static mavlink_status_t gs_mavlink_status;
 static uint32_t last_gs_activity_ms;
+static bool gs_seen;
 static uint32_t last_hand_tx_ms;
 static uint32_t last_heartbeat_ms;
 static uint32_t last_mode_tx_ms;
@@ -215,13 +216,17 @@ static void poll_rf900(void)
     }
 
     (void)rssi;
-    last_gs_activity_ms = HAL_GetTick();
 
     mavlink_message_t msg;
     for (uint8_t i = 0U; i < len; i++) {
         if (!mavlink_parse_char(MAVLINK_COMM_1, buf[i], &msg, &gs_mavlink_status)) {
             continue;
         }
+
+        /* Only a fully parsed MAVLink message counts as GS activity; raw
+           RF traffic (noise, foreign LoRa) must not hold us in passthrough */
+        last_gs_activity_ms = HAL_GetTick();
+        gs_seen = true;
 
         if (harness_state == HARNESS_STATE_GS_PASSTHROUGH ||
             harness_state == HARNESS_STATE_FAILSAFE) {
@@ -259,7 +264,9 @@ static void poll_uart(void)
 
 static bool gs_link_active(uint32_t now_ms)
 {
-    return (now_ms - last_gs_activity_ms) <= GS_ACTIVITY_TIMEOUT_MS;
+    /* gs_seen guards the boot window where last_gs_activity_ms == 0 would
+       otherwise make the GS look active for the first timeout period */
+    return gs_seen && (now_ms - last_gs_activity_ms) <= GS_ACTIVITY_TIMEOUT_MS;
 }
 
 static void update_arbitration(uint32_t now_ms)
@@ -341,6 +348,7 @@ void radio_harness_init(void)
     memset(&gs_mavlink_status, 0, sizeof(gs_mavlink_status));
 
     last_gs_activity_ms = 0U;
+    gs_seen = false;
     last_hand_tx_ms = 0U;
     last_heartbeat_ms = 0U;
     last_mode_tx_ms = 0U;
