@@ -47,4 +47,9 @@
 /* LoRa payload limit */
 #define LORA_MAX_PAYLOAD          240U
 
+/* Radio health: consecutive comm failures before a radio is considered
+   dead, and how often to attempt re-initializing a dead radio */
+#define RADIO_MAX_CONSECUTIVE_ERRORS  3U
+#define RADIO_REINIT_INTERVAL_MS      1000U
+
 #endif /* CONFIG_H */

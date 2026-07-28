@@ -1,4 +1,5 @@
 #include "radio_harness.h"
+#include "app_error.h"
 #include "config.h"
 #include "hand_safety.h"
 #include "spi_bus.h"
@@ -22,6 +23,8 @@ static uint32_t last_gs_activity_ms;
 static uint32_t last_hand_tx_ms;
 static uint32_t last_heartbeat_ms;
 static uint32_t last_mode_tx_ms;
+static uint32_t last_rf24_reinit_ms;
+static uint32_t last_rf900_reinit_ms;
 static bool failsafe_mode_sent;
 static bool guided_mode_sent;
 
@@ -97,9 +100,27 @@ static void forward_mavlink_to_gs(const mavlink_message_t *msg)
     sx1262_set_rx();
 }
 
+/* A radio that keeps failing SPI transactions or holds BUSY high is dead;
+   periodically try a full reset + re-init instead of hammering it. */
+static void service_radio_health(uint32_t now_ms)
+{
+    if (!sx1281_healthy() && (now_ms - last_rf24_reinit_ms) >= RADIO_REINIT_INTERVAL_MS) {
+        last_rf24_reinit_ms = now_ms;
+        if (!sx1281_init()) {
+            app_error_report(APP_ERR_RF24_INIT);
+        }
+    }
+    if (!sx1262_healthy() && (now_ms - last_rf900_reinit_ms) >= RADIO_REINIT_INTERVAL_MS) {
+        last_rf900_reinit_ms = now_ms;
+        if (!sx1262_init()) {
+            app_error_report(APP_ERR_RF900_INIT);
+        }
+    }
+}
+
 static void poll_rf24(void)
 {
-    if (!sx1281_irq_rx_done()) {
+    if (!sx1281_healthy() || !sx1281_irq_rx_done()) {
         return;
     }
 
@@ -118,7 +139,7 @@ static void poll_rf24(void)
 
 static void poll_rf900(void)
 {
-    if (!sx1262_irq_rx_done()) {
+    if (!sx1262_healthy() || !sx1262_irq_rx_done()) {
         return;
     }
 
@@ -243,14 +264,18 @@ void radio_harness_init(void)
     last_hand_tx_ms = 0U;
     last_heartbeat_ms = 0U;
     last_mode_tx_ms = 0U;
+    last_rf24_reinit_ms = 0U;
+    last_rf900_reinit_ms = 0U;
     failsafe_mode_sent = false;
     guided_mode_sent = false;
 
+    /* A dead radio must not brick the harness: the other link stays up and
+       service_radio_health() keeps retrying the failed one. */
     if (!sx1281_init()) {
-        Error_Handler();
+        app_error_report(APP_ERR_RF24_INIT);
     }
     if (!sx1262_init()) {
-        Error_Handler();
+        app_error_report(APP_ERR_RF900_INIT);
     }
 
     enter_state(HARNESS_STATE_FAILSAFE);
@@ -260,6 +285,7 @@ void radio_harness_poll(void)
 {
     const uint32_t now_ms = HAL_GetTick();
 
+    service_radio_health(now_ms);
     poll_rf24();
     poll_rf900();
     poll_uart();

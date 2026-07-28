@@ -1,6 +1,10 @@
 #include "spi_bus.h"
 #include "main.h"
 
+/* SPI1 runs at 4 MHz; even a full 255-byte frame takes well under 1 ms.
+   A short timeout keeps a broken bus from stalling the control loop. */
+#define SPI_TIMEOUT_MS 10U
+
 static GPIO_TypeDef *const nss_ports[SPI_DEV_COUNT] = {
     [SPI_DEV_RF24]  = NSS_RF24_GPIO_Port,
     [SPI_DEV_RF900] = NSS_RF900_GPIO_Port,
@@ -48,15 +52,15 @@ void spi_bus_deselect(spi_device_t dev)
 
 HAL_StatusTypeDef spi_bus_transfer(const uint8_t *tx, uint8_t *rx, uint16_t len)
 {
-    return HAL_SPI_TransmitReceive(&hspi1, (uint8_t *)tx, rx, len, 100U);
+    return HAL_SPI_TransmitReceive(&hspi1, (uint8_t *)tx, rx, len, SPI_TIMEOUT_MS);
 }
 
 HAL_StatusTypeDef spi_bus_write(const uint8_t *tx, uint16_t len)
 {
-    return HAL_SPI_Transmit(&hspi1, (uint8_t *)tx, len, 100U);
+    return HAL_SPI_Transmit(&hspi1, (uint8_t *)tx, len, SPI_TIMEOUT_MS);
 }
 
 HAL_StatusTypeDef spi_bus_read(uint8_t *rx, uint16_t len)
 {
-    return HAL_SPI_Receive(&hspi1, rx, len, 100U);
+    return HAL_SPI_Receive(&hspi1, rx, len, SPI_TIMEOUT_MS);
 }
